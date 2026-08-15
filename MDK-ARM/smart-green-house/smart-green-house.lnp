@@ -1,0 +1,26 @@
+--cpu Cortex-M3
+"smart-green-house\startup_stm32f103xb.o"
+"smart-green-house\main.o"
+"smart-green-house\stm32f1xx_it.o"
+"smart-green-house\stm32f1xx_hal_msp.o"
+"smart-green-house\stm32f1xx_hal_gpio_ex.o"
+"smart-green-house\stm32f1xx_hal_adc.o"
+"smart-green-house\stm32f1xx_hal_adc_ex.o"
+"smart-green-house\stm32f1xx_hal.o"
+"smart-green-house\stm32f1xx_hal_rcc.o"
+"smart-green-house\stm32f1xx_hal_rcc_ex.o"
+"smart-green-house\stm32f1xx_hal_gpio.o"
+"smart-green-house\stm32f1xx_hal_dma.o"
+"smart-green-house\stm32f1xx_hal_cortex.o"
+"smart-green-house\stm32f1xx_hal_pwr.o"
+"smart-green-house\stm32f1xx_hal_flash.o"
+"smart-green-house\stm32f1xx_hal_flash_ex.o"
+"smart-green-house\stm32f1xx_hal_exti.o"
+"smart-green-house\stm32f1xx_hal_i2c.o"
+"smart-green-house\stm32f1xx_hal_tim.o"
+"smart-green-house\stm32f1xx_hal_tim_ex.o"
+"smart-green-house\system_stm32f1xx.o"
+--strict --scatter "smart-green-house\smart-green-house.sct"
+--summary_stderr --info summarysizes --map --load_addr_map_info --xref --callgraph --symbols
+--info sizes --info totals --info unused --info veneers
+--list "smart-green-house.map" -o smart-green-house\smart-green-house.axf
