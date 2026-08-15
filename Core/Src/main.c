@@ -21,6 +21,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "greenhouse.h"
 
 /* USER CODE END Includes */
 
@@ -31,6 +32,22 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+
+/* Select one GreenhouseTestMode value while bringing up the hardware. */
+#define GREENHOUSE_SELECTED_TEST_MODE  GREENHOUSE_TEST_FULL
+
+/*
+ * Measure these values on the assembled greenhouse before enabling the
+ * corresponding automatic actuator. Zero deliberately means "not set".
+ */
+#define SOIL_DRY_ADC_CALIBRATION       0U
+#define SOIL_WET_ADC_CALIBRATION       0U
+#define LIGHT_DARK_ADC_CALIBRATION     0U
+#define LIGHT_BRIGHT_ADC_CALIBRATION   0U
+#define SERVO_CLOSED_PULSE_US          0U
+#define SERVO_OPEN_PULSE_US            0U
+#define SERVO_MOVE_TIME_MS             0U
+#define PUMP_RUN_TIME_MS               0U
 
 /* USER CODE END PD */
 
@@ -47,6 +64,18 @@ I2C_HandleTypeDef hi2c1;
 TIM_HandleTypeDef htim3;
 
 /* USER CODE BEGIN PV */
+
+static const GreenhouseConfig greenhouse_config =
+{
+  .soil_dry_adc = SOIL_DRY_ADC_CALIBRATION,
+  .soil_wet_adc = SOIL_WET_ADC_CALIBRATION,
+  .light_dark_adc = LIGHT_DARK_ADC_CALIBRATION,
+  .light_bright_adc = LIGHT_BRIGHT_ADC_CALIBRATION,
+  .servo_closed_pulse_us = SERVO_CLOSED_PULSE_US,
+  .servo_open_pulse_us = SERVO_OPEN_PULSE_US,
+  .servo_move_time_ms = SERVO_MOVE_TIME_MS,
+  .pump_run_time_ms = PUMP_RUN_TIME_MS
+};
 
 /* USER CODE END PV */
 
@@ -99,6 +128,12 @@ int main(void)
   MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
 
+  if (Greenhouse_Init(&hadc1, &hi2c1, &htim3, &greenhouse_config,
+                      GREENHOUSE_SELECTED_TEST_MODE) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -108,6 +143,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    Greenhouse_Process();
   }
   /* USER CODE END 3 */
 }
