@@ -1,0 +1,30 @@
+# Keil uVision build outputs
+MDK-ARM/**/*.o
+MDK-ARM/**/*.d
+MDK-ARM/**/*.axf
+MDK-ARM/**/*.elf
+MDK-ARM/**/*.hex
+MDK-ARM/**/*.bin
+MDK-ARM/**/*.map
+MDK-ARM/**/*.lnp
+MDK-ARM/**/*.dep
+MDK-ARM/**/*.crf
+MDK-ARM/**/*.htm
+MDK-ARM/**/*.sct
+MDK-ARM/**/*build_log*
+
+# Keil per-user settings and generated metadata
+MDK-ARM/**/*.uvoptx
+MDK-ARM/**/*.uvguix.*
+MDK-ARM/DebugConfig/
+MDK-ARM/RTE/
+
+# Local IDE and operating-system files
+.vscode/
+.idea/
+*.user
+*.swp
+*.swo
+*.bak
+.DS_Store
+Thumbs.db
