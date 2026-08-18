@@ -22,8 +22,9 @@ typedef enum
 } GreenhouseTestMode;
 
 /*
- * Zero means "not measured" for every field below. Automatic actions which
- * depend on an unset value remain disabled and the OLED reports the problem.
+ * Zero means "not configured" for every field below. Automatic actions which
+ * depend on missing or invalid configuration remain disabled; real raw sensor
+ * readings and the configuration problem stay visible on the OLED.
  */
 typedef struct
 {
