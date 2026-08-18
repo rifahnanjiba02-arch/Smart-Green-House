@@ -107,6 +107,10 @@ typedef struct
   uint8_t aht20_initialized;
   uint8_t aht20_has_reading;
   uint8_t bmp280_initialized;
+  uint8_t aht20_attempt_complete;
+  uint8_t bmp280_attempt_complete;
+  uint8_t soil_attempt_complete;
+  uint8_t light_attempt_complete;
   uint8_t adc_ready;
   uint8_t peripherals_ready;
   uint8_t sensor_initialization_done;
@@ -412,6 +416,7 @@ static void Servo_Process(uint32_t now)
 
 static void Soil_Read(uint32_t now)
 {
+  greenhouse.soil_attempt_complete = 1U;
   if (ADC_ReadChannel(ADC_CHANNEL_1, &greenhouse.soil_adc) == HAL_OK)
   {
     greenhouse.soil_state = SENSOR_VALID;
@@ -432,6 +437,7 @@ static void Soil_Read(uint32_t now)
 
 static void Light_Read(void)
 {
+  greenhouse.light_attempt_complete = 1U;
   if (ADC_ReadChannel(ADC_CHANNEL_0, &greenhouse.light_adc) == HAL_OK)
   {
     greenhouse.light_state = SENSOR_VALID;
@@ -545,6 +551,7 @@ static void Sensors_Initialize(uint32_t now)
     {
       greenhouse.aht20_state = SENSOR_ERROR;
       greenhouse.aht20_has_reading = 0U;
+      greenhouse.aht20_attempt_complete = 1U;
       greenhouse.aht20_retry_tick = now;
     }
   }
@@ -555,6 +562,7 @@ static void Sensors_Initialize(uint32_t now)
     if (greenhouse.bmp280_initialized == 0U)
     {
       greenhouse.bmp280_state = SENSOR_ERROR;
+      greenhouse.bmp280_attempt_complete = 1U;
       greenhouse.bmp280_retry_tick = now;
     }
   }
@@ -586,6 +594,7 @@ static void Sensors_StartCycle(uint32_t now)
       if (greenhouse.bmp280_initialized == 0U)
       {
         greenhouse.bmp280_state = SENSOR_ERROR;
+        greenhouse.bmp280_attempt_complete = 1U;
       }
     }
     if (greenhouse.bmp280_initialized != 0U)
@@ -594,10 +603,12 @@ static void Sensors_StartCycle(uint32_t now)
                       &greenhouse.pressure_pa) == HAL_OK)
       {
         greenhouse.bmp280_state = SENSOR_VALID;
+        greenhouse.bmp280_attempt_complete = 1U;
       }
       else
       {
         greenhouse.bmp280_state = SENSOR_ERROR;
+        greenhouse.bmp280_attempt_complete = 1U;
         greenhouse.bmp280_initialized = 0U;
         greenhouse.bmp280_retry_tick = now;
       }
@@ -618,6 +629,7 @@ static void Sensors_StartCycle(uint32_t now)
       {
         greenhouse.aht20_state = SENSOR_ERROR;
         greenhouse.aht20_has_reading = 0U;
+        greenhouse.aht20_attempt_complete = 1U;
       }
     }
     if (greenhouse.aht20_initialized != 0U)
@@ -631,6 +643,7 @@ static void Sensors_StartCycle(uint32_t now)
       {
         greenhouse.aht20_state = SENSOR_ERROR;
         greenhouse.aht20_has_reading = 0U;
+        greenhouse.aht20_attempt_complete = 1U;
         greenhouse.aht20_initialized = 0U;
         greenhouse.aht20_retry_tick = now;
       }
@@ -654,12 +667,14 @@ static void Sensors_ProcessAht20(uint32_t now)
   {
     greenhouse.aht20_state = SENSOR_VALID;
     greenhouse.aht20_has_reading = 1U;
+    greenhouse.aht20_attempt_complete = 1U;
   }
   else if ((status == AHT20_STATUS_ERROR) ||
            (Elapsed(now, greenhouse.aht20_tick, AHT20_TIMEOUT_MS) != 0U))
   {
     greenhouse.aht20_state = SENSOR_ERROR;
     greenhouse.aht20_has_reading = 0U;
+    greenhouse.aht20_attempt_complete = 1U;
     greenhouse.aht20_initialized = 0U;
     greenhouse.aht20_retry_tick = now;
   }
@@ -801,6 +816,18 @@ static uint8_t AllFirstReadingsValid(void)
            (((LightSelected() == 0U) ||
              (greenhouse.light_state == SENSOR_VALID)) != 0U) &&
            (greenhouse.oled_valid != 0U)) ? 1U : 0U;
+}
+
+static uint8_t AllSelectedAttemptsComplete(void)
+{
+  return ((((Aht20Selected() == 0U) ||
+             (greenhouse.aht20_attempt_complete != 0U)) != 0U) &&
+           (((Bmp280Selected() == 0U) ||
+             (greenhouse.bmp280_attempt_complete != 0U)) != 0U) &&
+           (((SoilSelected() == 0U) ||
+             (greenhouse.soil_attempt_complete != 0U)) != 0U) &&
+           (((LightSelected() == 0U) ||
+             (greenhouse.light_attempt_complete != 0U)) != 0U)) ? 1U : 0U;
 }
 
 static void DisplayScreen(const char *line0, const char *line2,
@@ -956,8 +983,7 @@ static void FormatTemperature(char *line, size_t size)
   uint32_t value;
 
   if ((greenhouse.aht20_state == SENSOR_NOT_ATTEMPTED) ||
-      ((greenhouse.aht20_state == SENSOR_PENDING) &&
-       (greenhouse.aht20_has_reading == 0U)))
+      (greenhouse.aht20_state == SENSOR_PENDING))
   {
     (void)snprintf(line, size, "TEMP:WAIT");
   }
@@ -980,8 +1006,7 @@ static void FormatTemperature(char *line, size_t size)
 static void FormatHumidity(char *line, size_t size)
 {
   if ((greenhouse.aht20_state == SENSOR_NOT_ATTEMPTED) ||
-      ((greenhouse.aht20_state == SENSOR_PENDING) &&
-       (greenhouse.aht20_has_reading == 0U)))
+      (greenhouse.aht20_state == SENSOR_PENDING))
   {
     (void)snprintf(line, size, "HUM:WAIT");
   }
@@ -999,7 +1024,8 @@ static void FormatHumidity(char *line, size_t size)
 
 static void FormatPressure(char *line, size_t size)
 {
-  if (greenhouse.bmp280_state == SENSOR_NOT_ATTEMPTED)
+  if ((greenhouse.bmp280_state == SENSOR_NOT_ATTEMPTED) ||
+      (greenhouse.bmp280_state == SENSOR_PENDING))
   {
     (void)snprintf(line, size, "PRESS:WAIT");
   }
@@ -1016,7 +1042,8 @@ static void FormatPressure(char *line, size_t size)
 
 static void FormatLight(char *line, size_t size)
 {
-  if (greenhouse.light_state == SENSOR_NOT_ATTEMPTED)
+  if ((greenhouse.light_state == SENSOR_NOT_ATTEMPTED) ||
+      (greenhouse.light_state == SENSOR_PENDING))
   {
     (void)snprintf(line, size, "LIGHT:WAIT");
   }
@@ -1037,7 +1064,8 @@ static void FormatLight(char *line, size_t size)
 
 static void FormatSoil(char *line, size_t size)
 {
-  if (greenhouse.soil_state == SENSOR_NOT_ATTEMPTED)
+  if ((greenhouse.soil_state == SENSOR_NOT_ATTEMPTED) ||
+      (greenhouse.soil_state == SENSOR_PENDING))
   {
     (void)snprintf(line, size, "SOIL:WAIT");
   }
@@ -1054,6 +1082,54 @@ static void FormatSoil(char *line, size_t size)
   {
     (void)snprintf(line, size, "SOIL RAW:%u", (unsigned int)greenhouse.soil_adc);
   }
+}
+
+static void DisplayStatusLine(void)
+{
+  const char *status;
+
+  if (greenhouse.critical_temperature != 0U)
+  {
+    status = "STATUS:HIGH TEMP";
+  }
+  else if (greenhouse.water_state == WATER_FAILED)
+  {
+    status = "STATUS:WATER FAILED";
+  }
+  else if (greenhouse.startup_state == STARTUP_CONFIG_REQUIRED)
+  {
+    status = "SERVO CAL MISSING";
+  }
+  else if (AdcCalibrationValid(greenhouse.config.soil_dry_adc,
+                               greenhouse.config.soil_wet_adc) == 0U)
+  {
+    status = "SOIL CAL REQUIRED";
+  }
+  else if (AdcCalibrationValid(greenhouse.config.light_dark_adc,
+                               greenhouse.config.light_bright_adc) == 0U)
+  {
+    status = "LIGHT CAL REQUIRED";
+  }
+  else if (greenhouse.config.pump_run_time_ms == 0U)
+  {
+    status = "PUMP TIME MISSING";
+  }
+  else if (greenhouse.low_light_warning != 0U)
+  {
+    status = "STATUS:LOW LIGHT";
+  }
+  else if ((greenhouse.aht20_state == SENSOR_ERROR) ||
+           (greenhouse.bmp280_state == SENSOR_ERROR) ||
+           (greenhouse.soil_state == SENSOR_ERROR) ||
+           (greenhouse.light_state == SENSOR_ERROR))
+  {
+    status = "STATUS:SENSOR ERROR";
+  }
+  else
+  {
+    status = "STATUS:NORMAL";
+  }
+  SSD1306_WriteLine(&greenhouse.oled, 6U, status);
 }
 
 static void DisplayNormalPage(void)
@@ -1092,39 +1168,7 @@ static void DisplayNormalPage(void)
     }
     (void)snprintf(line, sizeof(line), "WINDOW:%s", window_text);
     SSD1306_WriteLine(&greenhouse.oled, 4U, line);
-    if (AdcCalibrationValid(greenhouse.config.soil_dry_adc,
-                            greenhouse.config.soil_wet_adc) == 0U)
-    {
-      SSD1306_WriteLine(&greenhouse.oled, 6U, "SOIL CAL REQUIRED");
-    }
-    else if (AdcCalibrationValid(greenhouse.config.light_dark_adc,
-                                 greenhouse.config.light_bright_adc) == 0U)
-    {
-      SSD1306_WriteLine(&greenhouse.oled, 6U, "LIGHT CAL REQUIRED");
-    }
-    else if (greenhouse.config.pump_run_time_ms == 0U)
-    {
-      SSD1306_WriteLine(&greenhouse.oled, 6U, "PUMP TIME MISSING");
-    }
-    else if (greenhouse.water_state == WATER_FAILED)
-    {
-      SSD1306_WriteLine(&greenhouse.oled, 6U, "STATUS:FAILED");
-    }
-    else if (greenhouse.low_light_warning != 0U)
-    {
-      SSD1306_WriteLine(&greenhouse.oled, 6U, "STATUS:LOW LIGHT");
-    }
-    else if ((greenhouse.aht20_state == SENSOR_ERROR) ||
-             (greenhouse.bmp280_state == SENSOR_ERROR) ||
-             (greenhouse.soil_state == SENSOR_ERROR) ||
-             (greenhouse.light_state == SENSOR_ERROR))
-    {
-      SSD1306_WriteLine(&greenhouse.oled, 6U, "STATUS:SENSOR ERROR");
-    }
-    else
-    {
-      SSD1306_WriteLine(&greenhouse.oled, 6U, "STATUS:NORMAL");
-    }
+    DisplayStatusLine();
   }
   greenhouse.display_page ^= 1U;
 }
@@ -1134,14 +1178,21 @@ static uint8_t DisplayWarning(void)
   uint8_t offset;
   uint8_t warning;
 
+  if (greenhouse.critical_temperature != 0U)
+  {
+    DisplayScreen("HIGH TEMP ALERT", "PUMP OFF", "VENTILATING");
+    return 1U;
+  }
+  if (greenhouse.water_state == WATER_FAILED)
+  {
+    DisplayScreen("WATERING FAILED", "CHECK WATER/SOIL", "PUMP OFF");
+    return 1U;
+  }
+
   for (offset = 0U; offset < 11U; offset++)
   {
     warning = (uint8_t)((greenhouse.warning_index + offset) % 11U);
-    if ((warning == 0U) && (greenhouse.critical_temperature != 0U))
-    {
-      DisplayScreen("HIGH TEMP ALERT", "PUMP OFF", "VENTILATING");
-    }
-    else if ((warning == 1U) && (greenhouse.aht20_state == SENSOR_ERROR))
+    if ((warning == 1U) && (greenhouse.aht20_state == SENSOR_ERROR))
     {
       DisplayScreen("AHT20 ERROR", "TEMP/HUM UNAVAILABLE", "SAFE VENTILATION");
     }
@@ -1156,10 +1207,6 @@ static uint8_t DisplayWarning(void)
     else if ((warning == 4U) && (greenhouse.light_state == SENSOR_ERROR))
     {
       DisplayScreen("LIGHT ADC ERROR", "LIGHT UNAVAILABLE", "");
-    }
-    else if ((warning == 5U) && (greenhouse.water_state == WATER_FAILED))
-    {
-      DisplayScreen("WATERING FAILED", "CHECK WATER/SOIL", "PUMP OFF");
     }
     else if ((warning == 6U) && (greenhouse.low_light_warning != 0U))
     {
@@ -1225,7 +1272,9 @@ static void Display_Process(uint32_t now)
   }
   greenhouse.display_tick = now;
   if ((greenhouse.startup_state != STARTUP_READY) &&
-      (greenhouse.startup_state != STARTUP_CONFIG_REQUIRED))
+      (greenhouse.startup_state != STARTUP_CONFIG_REQUIRED) &&
+      ((greenhouse.startup_state != STARTUP_WAITING_FOR_FIRST_READINGS) ||
+       (AllSelectedAttemptsComplete() == 0U)))
   {
     DisplayStartup(now);
     return;
@@ -1286,6 +1335,7 @@ static void Display_Process(uint32_t now)
     }
     else if ((greenhouse.warning_turn == 0U) && (DisplayWarning() != 0U))
     {
+      /* An alert may replace one interval; the next two are sensor pages. */
       greenhouse.warning_turn = 1U;
     }
     else
