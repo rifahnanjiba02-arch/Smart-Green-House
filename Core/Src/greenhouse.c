@@ -13,6 +13,11 @@
 #define FAN_PORT GPIOA
 #define FAN_PIN GPIO_PIN_10
 
+/* Both fan and pump use active-high low-side N-MOSFET drivers. */
+#define FAN_ON_LEVEL GPIO_PIN_SET
+#define FAN_OFF_LEVEL GPIO_PIN_RESET
+#define PUMP_ON_LEVEL GPIO_PIN_SET
+#define PUMP_OFF_LEVEL GPIO_PIN_RESET
 #define SENSOR_INTERVAL_MS 2000U
 #define TEST_SENSOR_INTERVAL_MS 500U
 #define RETRY_INTERVAL_MS 10000U
@@ -322,6 +327,10 @@ static HAL_StatusTypeDef ADC_ReadChannel(uint32_t channel, uint16_t *value)
 
 static void Fan_Set(uint8_t on)
 {
+  if ((on != 0U) && (greenhouse.test_mode == GREENHOUSE_TEST_FULL))
+  {
+    on = 0U;
+  }
   if (on != 0U)
   {
     if (greenhouse.servo_moving != 0U)
@@ -330,24 +339,28 @@ static void Fan_Set(uint8_t on)
     }
     else
     {
-      HAL_GPIO_WritePin(PUMP_PORT, PUMP_PIN, GPIO_PIN_RESET);
+      HAL_GPIO_WritePin(PUMP_PORT, PUMP_PIN, PUMP_OFF_LEVEL);
       greenhouse.pump_on = 0U;
     }
   }
   HAL_GPIO_WritePin(FAN_PORT, FAN_PIN,
-                    (on != 0U) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+                    (on != 0U) ? FAN_ON_LEVEL : FAN_OFF_LEVEL);
   greenhouse.fan_on = on;
 }
 
 static void Pump_Set(uint8_t on)
 {
+  if ((on != 0U) && (greenhouse.test_mode == GREENHOUSE_TEST_FULL))
+  {
+    on = 0U;
+  }
   if ((on != 0U) && ((greenhouse.fan_on != 0U) ||
                      (greenhouse.servo_moving != 0U)))
   {
     on = 0U;
   }
   HAL_GPIO_WritePin(PUMP_PORT, PUMP_PIN,
-                    (on != 0U) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+                    (on != 0U) ? PUMP_ON_LEVEL : PUMP_OFF_LEVEL);
   greenhouse.pump_on = on;
 }
 
@@ -501,7 +514,10 @@ static void Light_Read(void)
 
 static void Watering_Start(uint32_t now)
 {
-  if ((greenhouse.config.pump_run_time_ms == 0U) ||
+  /* Automatic watering is allowed only for a valid dry-soil reading. */
+  if ((greenhouse.soil_state != SENSOR_VALID) ||
+      (greenhouse.soil_percent >= PUMP_START_PERCENT) ||
+      (greenhouse.config.pump_run_time_ms == 0U) ||
       (greenhouse.fan_on != 0U) || (greenhouse.servo_moving != 0U))
   {
     return;
@@ -567,6 +583,11 @@ static void Watering_Process(uint32_t now)
     }
     else if (greenhouse.soil_percent >= WATERING_COMPLETE_PERCENT)
     {
+      Watering_Reset();
+    }
+    else if (greenhouse.soil_percent >= PUMP_START_PERCENT)
+    {
+      /* Soil is not dry enough for another automatic watering cycle. */
       Watering_Reset();
     }
     else if (greenhouse.watering_attempts >= MAX_WATERING_ATTEMPTS)
@@ -770,61 +791,22 @@ static WindowState RequiredWindow(void)
 
 static void FullControl_Process(uint32_t now)
 {
-  WindowState required_window;
+  (void)now;
 
-  greenhouse.critical_temperature =
-      ((Aht20ReadingAvailable() != 0U) &&
-       (greenhouse.temperature_mc >= CRITICAL_TEMP_MC)) ? 1U : 0U;
-  if (Aht20ReadingAvailable() != 0U)
-  {
-    if ((greenhouse.temperature_mc >= FAN_ON_TEMP_MC) ||
-        (greenhouse.humidity_mpct >= FAN_ON_HUMIDITY_MPCT))
-    {
-      greenhouse.ventilation_requested = 1U;
-    }
-    else if ((greenhouse.temperature_mc <= FAN_OFF_TEMP_MC) &&
-             (greenhouse.humidity_mpct <= FAN_OFF_HUMIDITY_MPCT))
-    {
-      greenhouse.ventilation_requested = 0U;
-    }
-  }
-  else if (greenhouse.aht20_state == SENSOR_ERROR)
-  {
-    greenhouse.ventilation_requested = 1U;
-  }
+  /* Full test mode validates every sensor without running any actuator. */
+  Fan_Set(0U);
+  Pump_Set(0U);
+  Buzzer_Set(0U);
+  greenhouse.buzzer_beeps_remaining = 0U;
+  greenhouse.critical_temperature = 0U;
+  greenhouse.ventilation_requested = 0U;
+  greenhouse.water_state = WATER_IDLE;
+  greenhouse.watering_attempts = 0U;
 
-  if ((Aht20ReadingAvailable() == 0U) &&
-      (greenhouse.aht20_state != SENSOR_ERROR))
-  {
-    Pump_Set(0U);
-    Fan_Set(0U);
-    return;
-  }
-
-  required_window = RequiredWindow();
-  if ((greenhouse.servo_moving == 0U) &&
-      (required_window != WINDOW_UNKNOWN) &&
-      (required_window != greenhouse.window_state) &&
-      (Servo_Start(required_window, now) != 0U))
-  {
-    return;
-  }
   if (greenhouse.servo_moving != 0U)
   {
-    Fan_Set(0U);
-    Pump_Set(0U);
-  }
-  else if ((greenhouse.critical_temperature != 0U) ||
-           (greenhouse.aht20_state == SENSOR_ERROR) ||
-           (greenhouse.ventilation_requested != 0U))
-  {
-    Watering_Abort(now);
-    Fan_Set(1U);
-  }
-  else
-  {
-    Fan_Set(0U);
-    Watering_Process(now);
+    (void)HAL_TIM_PWM_Stop(greenhouse.pwm_timer, TIM_CHANNEL_1);
+    greenhouse.servo_moving = 0U;
   }
 }
 
@@ -994,7 +976,7 @@ static void DisplayStatusLine(void)
   }
   else if (ServoConfigurationValid() == 0U)
   {
-    status = "SERVO CAL MISSING";
+    status = "WINDOW CAL MISSING";
   }
   else
   {
@@ -1219,11 +1201,7 @@ HAL_StatusTypeDef Greenhouse_Init(ADC_HandleTypeDef *adc,
   {
     greenhouse.oled_valid = 1U;
   }
-  if ((test_mode == GREENHOUSE_TEST_FULL) &&
-      (ServoConfigurationValid() != 0U))
-  {
-    (void)Servo_Start(WINDOW_CLOSED, now);
-  }
+  /* Full test mode keeps the servo stopped; use GREENHOUSE_TEST_SERVO. */
   return HAL_OK;
 }
 
@@ -1264,7 +1242,7 @@ void Greenhouse_Process(void)
   else
   {
     TestMode_Process(now);
+    Buzzer_Process(now);
   }
-  Buzzer_Process(now);
   Display_Process(now);
 }

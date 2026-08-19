@@ -40,10 +40,10 @@
  * Measure these values on the assembled greenhouse before enabling the
  * corresponding automatic actuator. Zero deliberately means "not set".
  */
-#define SOIL_DRY_ADC_CALIBRATION       0U
-#define SOIL_WET_ADC_CALIBRATION       0U
-#define LIGHT_DARK_ADC_CALIBRATION     0U
-#define LIGHT_BRIGHT_ADC_CALIBRATION   0U
+#define SOIL_DRY_ADC_CALIBRATION       2513U
+#define SOIL_WET_ADC_CALIBRATION       1811U
+#define LIGHT_DARK_ADC_CALIBRATION     348U
+#define LIGHT_BRIGHT_ADC_CALIBRATION   3866U
 #define SERVO_CLOSED_PULSE_US          0U
 #define SERVO_OPEN_PULSE_US            0U
 #define SERVO_MOVE_TIME_MS             0U
@@ -342,7 +342,8 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8|GPIO_PIN_9|GPIO_PIN_10, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9|GPIO_PIN_10, GPIO_PIN_RESET);
 
   /*Configure GPIO pins : PA8 PA9 PA10 */
   GPIO_InitStruct.Pin = GPIO_PIN_8|GPIO_PIN_9|GPIO_PIN_10;
