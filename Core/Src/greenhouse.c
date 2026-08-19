@@ -41,6 +41,7 @@
 #define WINDOW_CLOSE_HUMIDITY_MPCT 78000U
 #define CRITICAL_TEMP_MC 40000
 #define PUMP_START_PERCENT 30
+#define PUMP_STARTUP_HOLD_MS 2000U
 #define WATERING_COMPLETE_PERCENT 45
 #define LOW_LIGHT_PERCENT 20
 #define LOW_LIGHT_CLEAR_PERCENT 30
@@ -350,10 +351,6 @@ static void Fan_Set(uint8_t on)
 
 static void Pump_Set(uint8_t on)
 {
-  if ((on != 0U) && (greenhouse.test_mode == GREENHOUSE_TEST_FULL))
-  {
-    on = 0U;
-  }
   if ((on != 0U) && ((greenhouse.fan_on != 0U) ||
                      (greenhouse.servo_moving != 0U)))
   {
@@ -789,24 +786,45 @@ static WindowState RequiredWindow(void)
   return greenhouse.window_state;
 }
 
+static uint8_t PumpStartupActive(uint32_t now)
+{
+  return ((greenhouse.water_state == WATER_PUMPING) &&
+          (greenhouse.pump_on != 0U) &&
+          (Elapsed(now, greenhouse.water_tick, PUMP_STARTUP_HOLD_MS) == 0U)) ?
+         1U : 0U;
+}
+
 static void FullControl_Process(uint32_t now)
 {
-  (void)now;
-
-  /* Full test mode validates every sensor without running any actuator. */
   Fan_Set(0U);
-  Pump_Set(0U);
   Buzzer_Set(0U);
   greenhouse.buzzer_beeps_remaining = 0U;
   greenhouse.critical_temperature = 0U;
   greenhouse.ventilation_requested = 0U;
-  greenhouse.water_state = WATER_IDLE;
-  greenhouse.watering_attempts = 0U;
 
   if (greenhouse.servo_moving != 0U)
   {
     (void)HAL_TIM_PWM_Stop(greenhouse.pwm_timer, TIM_CHANNEL_1);
     greenhouse.servo_moving = 0U;
+  }
+
+  if (PumpStartupActive(now) != 0U)
+  {
+    Pump_Set(1U);
+    return;
+  }
+
+  if ((greenhouse.soil_state == SENSOR_VALID) &&
+      (AdcCalibrationValid(greenhouse.config.soil_dry_adc,
+                           greenhouse.config.soil_wet_adc) != 0U) &&
+      (greenhouse.config.pump_run_time_ms != 0U) &&
+      (greenhouse.soil_percent < PUMP_START_PERCENT))
+  {
+    Watering_Process(now);
+  }
+  else
+  {
+    Watering_Reset();
   }
 }
 
@@ -1213,6 +1231,15 @@ void Greenhouse_Process(void)
   Oled_Retry(now);
   Servo_Process(now);
   Watering_Timers(now);
+  if ((greenhouse.test_mode == GREENHOUSE_TEST_FULL) &&
+      (PumpStartupActive(now) != 0U))
+  {
+    Fan_Set(0U);
+    Buzzer_Set(0U);
+    greenhouse.buzzer_beeps_remaining = 0U;
+    Pump_Set(1U);
+    return;
+  }
   Sensors_ProcessAht20(now);
   if (Elapsed(now, greenhouse.sensor_tick, SensorInterval()) != 0U)
   {
