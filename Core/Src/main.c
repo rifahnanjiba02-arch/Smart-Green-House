@@ -40,14 +40,14 @@
  * Measure these values on the assembled greenhouse before enabling the
  * corresponding automatic actuator. Zero deliberately means "not set".
  */
-#define SOIL_DRY_ADC_CALIBRATION       2513U
-#define SOIL_WET_ADC_CALIBRATION       1811U
-#define LIGHT_DARK_ADC_CALIBRATION     348U
-#define LIGHT_BRIGHT_ADC_CALIBRATION   3866U
-#define SERVO_CLOSED_PULSE_US          0U
-#define SERVO_OPEN_PULSE_US            0U
-#define SERVO_MOVE_TIME_MS             0U
-#define PUMP_RUN_TIME_MS               0U
+#define SOIL_DRY_ADC_CALIBRATION       443U
+#define SOIL_WET_ADC_CALIBRATION       363U
+#define LIGHT_DARK_ADC_CALIBRATION     137U
+#define LIGHT_BRIGHT_ADC_CALIBRATION   700U
+#define SERVO_CLOSED_PULSE_US          1000U
+#define SERVO_OPEN_PULSE_US            1500U
+#define SERVO_MOVE_TIME_MS             700U
+#define PUMP_RUN_TIME_MS               1000U
 
 /* USER CODE END PD */
 

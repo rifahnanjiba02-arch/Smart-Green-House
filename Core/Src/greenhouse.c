@@ -18,15 +18,16 @@
 #define FAN_OFF_LEVEL GPIO_PIN_RESET
 #define PUMP_ON_LEVEL GPIO_PIN_SET
 #define PUMP_OFF_LEVEL GPIO_PIN_RESET
-#define SENSOR_INTERVAL_MS 2000U
+#define SENSOR_INTERVAL_MS 500U
 #define TEST_SENSOR_INTERVAL_MS 500U
-#define RETRY_INTERVAL_MS 10000U
+#define RETRY_INTERVAL_MS 2000U
 #define AHT20_READ_DELAY_MS 85U
 #define AHT20_TIMEOUT_MS 250U
-#define DISPLAY_INTERVAL_MS 2500U
+#define DISPLAY_INTERVAL_MS 1000U
 #define TEST_DISPLAY_INTERVAL_MS 500U
-#define SOAK_TIME_MS 20000U
-#define LOW_LIGHT_TIME_MS 30000U
+#define TEST_OUTPUT_INTERVAL_MS 1000U
+#define SOAK_TIME_MS 3000U
+#define LOW_LIGHT_TIME_MS 3000U
 #define MAX_WATERING_ATTEMPTS 3U
 #define ADC_TIMEOUT_MS 10U
 #define ADC_MAX_VALUE 4095U
@@ -41,7 +42,7 @@
 #define WINDOW_CLOSE_HUMIDITY_MPCT 78000U
 #define CRITICAL_TEMP_MC 40000
 #define PUMP_START_PERCENT 30
-#define PUMP_STARTUP_HOLD_MS 2000U
+#define PUMP_STARTUP_HOLD_MS 1000U
 #define WATERING_COMPLETE_PERCENT 45
 #define LOW_LIGHT_PERCENT 20
 #define LOW_LIGHT_CLEAR_PERCENT 30
@@ -797,8 +798,6 @@ static uint8_t PumpStartupActive(uint32_t now)
 static void FullControl_Process(uint32_t now)
 {
   Fan_Set(0U);
-  Buzzer_Set(0U);
-  greenhouse.buzzer_beeps_remaining = 0U;
   greenhouse.critical_temperature = 0U;
   greenhouse.ventilation_requested = 0U;
 
@@ -1136,14 +1135,14 @@ static void TestMode_Process(uint32_t now)
   Pump_Set(0U);
   greenhouse.critical_temperature = 0U;
   if ((greenhouse.test_mode == GREENHOUSE_TEST_BUZZER) &&
-      (Elapsed(now, greenhouse.test_tick, 2000U) != 0U))
+      (Elapsed(now, greenhouse.test_tick, TEST_OUTPUT_INTERVAL_MS) != 0U))
   {
     greenhouse.test_tick = now;
     Buzzer_Request(1U, now);
   }
   else if ((greenhouse.test_mode == GREENHOUSE_TEST_SERVO) &&
            (greenhouse.servo_moving == 0U) &&
-           (Elapsed(now, greenhouse.test_tick, 2000U) != 0U))
+           (Elapsed(now, greenhouse.test_tick, TEST_OUTPUT_INTERVAL_MS) != 0U))
   {
     greenhouse.test_tick = now;
     (void)Servo_Start((greenhouse.window_state == WINDOW_OPEN) ?
@@ -1151,7 +1150,7 @@ static void TestMode_Process(uint32_t now)
   }
   else if (greenhouse.test_mode == GREENHOUSE_TEST_FAN)
   {
-    if (Elapsed(now, greenhouse.test_tick, 2000U) != 0U)
+    if (Elapsed(now, greenhouse.test_tick, TEST_OUTPUT_INTERVAL_MS) != 0U)
     {
       greenhouse.test_tick = now;
       greenhouse.test_output_on ^= 1U;
@@ -1166,7 +1165,7 @@ static void TestMode_Process(uint32_t now)
     }
     else if (Elapsed(now, greenhouse.test_tick,
                      (greenhouse.test_output_on != 0U) ?
-                     greenhouse.config.pump_run_time_ms : 2000U) != 0U)
+                     greenhouse.config.pump_run_time_ms : TEST_OUTPUT_INTERVAL_MS) != 0U)
     {
       greenhouse.test_tick = now;
       greenhouse.test_output_on ^= 1U;
@@ -1236,7 +1235,6 @@ void Greenhouse_Process(void)
   {
     Fan_Set(0U);
     Buzzer_Set(0U);
-    greenhouse.buzzer_beeps_remaining = 0U;
     Pump_Set(1U);
     return;
   }
@@ -1269,7 +1267,7 @@ void Greenhouse_Process(void)
   else
   {
     TestMode_Process(now);
-    Buzzer_Process(now);
   }
+  Buzzer_Process(now);
   Display_Process(now);
 }
