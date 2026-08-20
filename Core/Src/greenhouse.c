@@ -12,6 +12,9 @@
 #define PUMP_PIN GPIO_PIN_9
 #define FAN_PORT GPIOA
 #define FAN_PIN GPIO_PIN_10
+#define I2C_RECOVERY_PORT GPIOB
+#define I2C_RECOVERY_SCL_PIN GPIO_PIN_6
+#define I2C_RECOVERY_SDA_PIN GPIO_PIN_7
 
 /* Both fan and pump use active-high low-side N-MOSFET drivers. */
 #define FAN_ON_LEVEL GPIO_PIN_SET
@@ -26,24 +29,29 @@
 #define DISPLAY_INTERVAL_MS 1000U
 #define TEST_DISPLAY_INTERVAL_MS 500U
 #define TEST_OUTPUT_INTERVAL_MS 1000U
+#define OUTPUT_ARM_DELAY_MS 3000U
 #define SOAK_TIME_MS 3000U
 #define LOW_LIGHT_TIME_MS 3000U
+#define LOW_LIGHT_BEEP_ON_MS 250U
+#define LOW_LIGHT_BEEP_OFF_MS 180U
+#define LOW_LIGHT_REPEAT_MS 5000U
+#define LOW_LIGHT_BEEP_COUNT 2U
 #define MAX_WATERING_ATTEMPTS 3U
 #define ADC_TIMEOUT_MS 10U
+#define ADC_SAMPLE_COUNT 8U
 #define ADC_MAX_VALUE 4095U
 
-#define FAN_ON_TEMP_MC 30000
-#define FAN_OFF_TEMP_MC 28000
-#define FAN_ON_HUMIDITY_MPCT 80000U
-#define FAN_OFF_HUMIDITY_MPCT 75000U
-#define WINDOW_OPEN_TEMP_MC 32000
+#define FAN_ON_TEMP_MC 32000
+#define FAN_OFF_TEMP_MC 31000
+#define FAN_ON_HUMIDITY_MPCT 82000U
+#define FAN_OFF_HUMIDITY_MPCT 80000U
+#define WINDOW_OPEN_TEMP_MC 30000
 #define WINDOW_CLOSE_TEMP_MC 29000
-#define WINDOW_OPEN_HUMIDITY_MPCT 85000U
-#define WINDOW_CLOSE_HUMIDITY_MPCT 78000U
+#define WINDOW_OPEN_HUMIDITY_MPCT 78000U
+#define WINDOW_CLOSE_HUMIDITY_MPCT 75000U
 #define CRITICAL_TEMP_MC 40000
 #define PUMP_START_PERCENT 30
-#define PUMP_STARTUP_HOLD_MS 1000U
-#define WATERING_COMPLETE_PERCENT 45
+#define PUMP_CLEAR_PERCENT 35
 #define LOW_LIGHT_PERCENT 20
 #define LOW_LIGHT_CLEAR_PERCENT 30
 
@@ -69,6 +77,13 @@ typedef enum
   WATER_SOAKING,
   WATER_FAILED
 } WaterState;
+
+typedef struct
+{
+  uint8_t enabled;
+  uint8_t pending;
+  uint32_t tick;
+} OutputGate;
 
 typedef struct
 {
@@ -102,6 +117,9 @@ typedef struct
   uint8_t bmp280_initialized;
   uint8_t adc_ready;
   uint8_t oled_valid;
+  OutputGate light_output;
+  OutputGate soil_output;
+  OutputGate climate_output;
   uint8_t fan_on;
   uint8_t pump_on;
   uint8_t servo_moving;
@@ -110,11 +128,10 @@ typedef struct
   uint8_t critical_temperature;
   uint8_t low_light_timer_active;
   uint8_t low_light_warning;
+  uint8_t low_light_beeps_remaining;
   uint8_t display_page;
   uint8_t watering_attempts;
   uint8_t buzzer_on;
-  uint8_t buzzer_beeps_remaining;
-  uint8_t previous_sensor_alarm;
   uint8_t test_output_on;
 
   uint32_t sensor_tick;
@@ -127,8 +144,9 @@ typedef struct
   uint32_t water_tick;
   uint32_t soil_sample_tick;
   uint32_t low_light_tick;
+  uint32_t low_light_buzzer_tick;
+  uint32_t low_light_repeat_tick;
   uint32_t display_tick;
-  uint32_t buzzer_tick;
   uint32_t test_tick;
 } GreenhouseContext;
 
@@ -213,6 +231,7 @@ static uint8_t IsSensorTest(void)
 {
   return ((greenhouse.test_mode == GREENHOUSE_TEST_LIGHT) ||
           (greenhouse.test_mode == GREENHOUSE_TEST_SOIL) ||
+          (greenhouse.test_mode == GREENHOUSE_TEST_SOIL_PUMP) ||
           (greenhouse.test_mode == GREENHOUSE_TEST_AHT20) ||
           (greenhouse.test_mode == GREENHOUSE_TEST_BMP280)) ? 1U : 0U;
 }
@@ -232,7 +251,8 @@ static uint8_t Bmp280Selected(void)
 static uint8_t SoilSelected(void)
 {
   return ((greenhouse.test_mode == GREENHOUSE_TEST_FULL) ||
-          (greenhouse.test_mode == GREENHOUSE_TEST_SOIL)) ? 1U : 0U;
+          (greenhouse.test_mode == GREENHOUSE_TEST_SOIL) ||
+          (greenhouse.test_mode == GREENHOUSE_TEST_SOIL_PUMP)) ? 1U : 0U;
 }
 
 static uint8_t LightSelected(void)
@@ -240,6 +260,7 @@ static uint8_t LightSelected(void)
   return ((greenhouse.test_mode == GREENHOUSE_TEST_FULL) ||
           (greenhouse.test_mode == GREENHOUSE_TEST_LIGHT)) ? 1U : 0U;
 }
+
 
 static uint32_t SensorInterval(void)
 {
@@ -279,6 +300,52 @@ static uint8_t Aht20ReadingAvailable(void)
            (greenhouse.aht20_has_reading != 0U))) ? 1U : 0U;
 }
 
+static void OutputGate_Update(OutputGate *gate, uint8_t reading_available,
+                              uint32_t now)
+{
+  if (gate->enabled != 0U)
+  {
+    return;
+  }
+  if (reading_available == 0U)
+  {
+    gate->pending = 0U;
+    return;
+  }
+  if (gate->pending == 0U)
+  {
+    gate->pending = 1U;
+    gate->tick = now;
+    return;
+  }
+  if (Elapsed(now, gate->tick, OUTPUT_ARM_DELAY_MS) != 0U)
+  {
+    gate->enabled = 1U;
+    gate->pending = 0U;
+  }
+}
+
+static void OutputGates_Process(uint32_t now)
+{
+  /* Low-light already has its own confirmation timer.  Arm it as soon as
+     the light ADC has one valid reading instead of adding a second delay. */
+  if (greenhouse.light_state == SENSOR_VALID)
+  {
+    greenhouse.light_output.enabled = 1U;
+    greenhouse.light_output.pending = 0U;
+  }
+  else if (greenhouse.light_output.enabled == 0U)
+  {
+    greenhouse.light_output.pending = 0U;
+  }
+
+  OutputGate_Update(&greenhouse.soil_output,
+                    (greenhouse.soil_state == SENSOR_VALID) ? 1U : 0U,
+                    now);
+  OutputGate_Update(&greenhouse.climate_output,
+                    Aht20ReadingAvailable(), now);
+}
+
 static int16_t ConvertPercent(uint16_t raw, uint16_t zero, uint16_t full)
 {
   int32_t value = (((int32_t)raw - (int32_t)zero) * 100) /
@@ -298,7 +365,9 @@ static int16_t ConvertPercent(uint16_t raw, uint16_t zero, uint16_t full)
 static HAL_StatusTypeDef ADC_ReadChannel(uint32_t channel, uint16_t *value)
 {
   ADC_ChannelConfTypeDef channel_config = {0};
-  HAL_StatusTypeDef status;
+  uint32_t sum = 0U;
+  uint16_t sample;
+  uint8_t index;
 
   if ((greenhouse.adc_ready == 0U) || (value == NULL))
   {
@@ -308,42 +377,94 @@ static HAL_StatusTypeDef ADC_ReadChannel(uint32_t channel, uint16_t *value)
   channel_config.Channel = channel;
   channel_config.Rank = ADC_REGULAR_RANK_1;
   channel_config.SamplingTime = ADC_SAMPLETIME_55CYCLES_5;
-  status = HAL_ADC_ConfigChannel(greenhouse.adc, &channel_config);
-  if (status != HAL_OK)
+  if (HAL_ADC_ConfigChannel(greenhouse.adc, &channel_config) != HAL_OK)
   {
-    return status;
+    return HAL_ERROR;
   }
-  status = HAL_ADC_Start(greenhouse.adc);
-  if (status != HAL_OK)
+
+  /* Discard the first conversion after switching channels, then average. */
+  for (index = 0U; index <= ADC_SAMPLE_COUNT; index++)
   {
-    return status;
+    if (HAL_ADC_Start(greenhouse.adc) != HAL_OK)
+    {
+      return HAL_ERROR;
+    }
+    if (HAL_ADC_PollForConversion(greenhouse.adc, ADC_TIMEOUT_MS) != HAL_OK)
+    {
+      (void)HAL_ADC_Stop(greenhouse.adc);
+      return HAL_ERROR;
+    }
+    sample = (uint16_t)HAL_ADC_GetValue(greenhouse.adc);
+    (void)HAL_ADC_Stop(greenhouse.adc);
+    if (index != 0U)
+    {
+      sum += sample;
+    }
   }
-  status = HAL_ADC_PollForConversion(greenhouse.adc, ADC_TIMEOUT_MS);
-  if (status == HAL_OK)
+
+  *value = (uint16_t)((sum + (ADC_SAMPLE_COUNT / 2U)) /
+                      ADC_SAMPLE_COUNT);
+  return HAL_OK;
+}
+
+static HAL_StatusTypeDef I2C_RecoverBus(void)
+{
+  GPIO_InitTypeDef gpio = {0};
+  uint8_t pulse;
+
+  (void)HAL_I2C_DeInit(greenhouse.i2c);
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+
+  HAL_GPIO_WritePin(I2C_RECOVERY_PORT, I2C_RECOVERY_SCL_PIN, GPIO_PIN_SET);
+  gpio.Pin = I2C_RECOVERY_SCL_PIN;
+  gpio.Mode = GPIO_MODE_OUTPUT_OD;
+  gpio.Pull = GPIO_PULLUP;
+  gpio.Speed = GPIO_SPEED_FREQ_HIGH;
+  HAL_GPIO_Init(I2C_RECOVERY_PORT, &gpio);
+
+  gpio.Pin = I2C_RECOVERY_SDA_PIN;
+  gpio.Mode = GPIO_MODE_INPUT;
+  gpio.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(I2C_RECOVERY_PORT, &gpio);
+  HAL_Delay(1U);
+
+  for (pulse = 0U; pulse < 9U; pulse++)
   {
-    *value = (uint16_t)HAL_ADC_GetValue(greenhouse.adc);
+    if (HAL_GPIO_ReadPin(I2C_RECOVERY_PORT,
+                        I2C_RECOVERY_SDA_PIN) == GPIO_PIN_SET)
+    {
+      break;
+    }
+    HAL_GPIO_WritePin(I2C_RECOVERY_PORT, I2C_RECOVERY_SCL_PIN,
+                      GPIO_PIN_RESET);
+    HAL_Delay(1U);
+    HAL_GPIO_WritePin(I2C_RECOVERY_PORT, I2C_RECOVERY_SCL_PIN,
+                      GPIO_PIN_SET);
+    HAL_Delay(1U);
   }
-  (void)HAL_ADC_Stop(greenhouse.adc);
-  return status;
+
+  /* Generate a STOP before restoring the peripheral alternate function. */
+  gpio.Pin = I2C_RECOVERY_SDA_PIN;
+  gpio.Mode = GPIO_MODE_OUTPUT_OD;
+  gpio.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(I2C_RECOVERY_PORT, &gpio);
+  HAL_GPIO_WritePin(I2C_RECOVERY_PORT, I2C_RECOVERY_SDA_PIN, GPIO_PIN_RESET);
+  HAL_Delay(1U);
+  HAL_GPIO_WritePin(I2C_RECOVERY_PORT, I2C_RECOVERY_SCL_PIN, GPIO_PIN_SET);
+  HAL_Delay(1U);
+  HAL_GPIO_WritePin(I2C_RECOVERY_PORT, I2C_RECOVERY_SDA_PIN, GPIO_PIN_SET);
+  HAL_Delay(1U);
+
+  return HAL_I2C_Init(greenhouse.i2c);
 }
 
 static void Fan_Set(uint8_t on)
 {
-  if ((on != 0U) && (greenhouse.test_mode == GREENHOUSE_TEST_FULL))
+  /* Fan has the lowest actuator priority and never changes pump state. */
+  if ((on != 0U) && ((greenhouse.pump_on != 0U) ||
+                     (greenhouse.servo_moving != 0U)))
   {
     on = 0U;
-  }
-  if (on != 0U)
-  {
-    if (greenhouse.servo_moving != 0U)
-    {
-      on = 0U;
-    }
-    else
-    {
-      HAL_GPIO_WritePin(PUMP_PORT, PUMP_PIN, PUMP_OFF_LEVEL);
-      greenhouse.pump_on = 0U;
-    }
   }
   HAL_GPIO_WritePin(FAN_PORT, FAN_PIN,
                     (on != 0U) ? FAN_ON_LEVEL : FAN_OFF_LEVEL);
@@ -369,45 +490,58 @@ static void Buzzer_Set(uint8_t on)
   greenhouse.buzzer_on = on;
 }
 
-static void Buzzer_Request(uint8_t count, uint32_t now)
+static void LowLight_BuzzerStop(void)
 {
-  if ((greenhouse.critical_temperature == 0U) &&
-      (greenhouse.water_state != WATER_FAILED) &&
-      (count > greenhouse.buzzer_beeps_remaining))
+  greenhouse.low_light_beeps_remaining = 0U;
+  Buzzer_Set(0U);
+}
+
+static void LowLight_BuzzerStart(uint32_t now)
+{
+  greenhouse.low_light_beeps_remaining = LOW_LIGHT_BEEP_COUNT;
+  greenhouse.low_light_buzzer_tick = now;
+  Buzzer_Set(1U);
+}
+
+static void LowLight_BuzzerProcess(uint32_t now)
+{
+  if (greenhouse.low_light_warning == 0U)
   {
-    greenhouse.buzzer_beeps_remaining = count;
-    if (greenhouse.buzzer_on == 0U)
+    LowLight_BuzzerStop();
+    return;
+  }
+
+  if (greenhouse.low_light_beeps_remaining == 0U)
+  {
+    if (Elapsed(now, greenhouse.low_light_repeat_tick,
+                LOW_LIGHT_REPEAT_MS) != 0U)
     {
-      greenhouse.buzzer_tick = now;
+      LowLight_BuzzerStart(now);
     }
+    return;
+  }
+
+  if ((greenhouse.buzzer_on != 0U) &&
+      (Elapsed(now, greenhouse.low_light_buzzer_tick,
+               LOW_LIGHT_BEEP_ON_MS) != 0U))
+  {
+    Buzzer_Set(0U);
+    greenhouse.low_light_beeps_remaining--;
+    greenhouse.low_light_buzzer_tick = now;
+    if (greenhouse.low_light_beeps_remaining == 0U)
+    {
+      greenhouse.low_light_repeat_tick = now;
+    }
+  }
+  else if ((greenhouse.buzzer_on == 0U) &&
+           (Elapsed(now, greenhouse.low_light_buzzer_tick,
+                    LOW_LIGHT_BEEP_OFF_MS) != 0U))
+  {
+    Buzzer_Set(1U);
+    greenhouse.low_light_buzzer_tick = now;
   }
 }
 
-static void Buzzer_Process(uint32_t now)
-{
-  if ((greenhouse.critical_temperature != 0U) ||
-      (greenhouse.water_state == WATER_FAILED))
-  {
-    Buzzer_Set(((now % 1000U) < 150U) ? 1U : 0U);
-  }
-  else if (greenhouse.buzzer_beeps_remaining == 0U)
-  {
-    Buzzer_Set(0U);
-  }
-  else if (TimeReached(now, greenhouse.buzzer_tick) != 0U)
-  {
-    if (greenhouse.buzzer_on != 0U)
-    {
-      Buzzer_Set(0U);
-      greenhouse.buzzer_beeps_remaining--;
-    }
-    else
-    {
-      Buzzer_Set(1U);
-    }
-    greenhouse.buzzer_tick = now + 120U;
-  }
-}
 
 static void Watering_Reset(void)
 {
@@ -416,21 +550,14 @@ static void Watering_Reset(void)
   greenhouse.watering_attempts = 0U;
 }
 
-static void Watering_Abort(uint32_t now)
-{
-  Pump_Set(0U);
-  if (greenhouse.water_state == WATER_PUMPING)
-  {
-    greenhouse.water_state = WATER_SOAKING;
-    greenhouse.water_tick = now;
-  }
-}
 
 static uint8_t Servo_Start(WindowState target, uint32_t now)
 {
   uint16_t pulse;
 
+  /* A servo move never interrupts watering; it waits for the pump. */
   if ((greenhouse.servo_moving != 0U) ||
+      (greenhouse.pump_on != 0U) ||
       (ServoConfigurationValid() == 0U))
   {
     return 0U;
@@ -442,7 +569,6 @@ static uint8_t Servo_Start(WindowState target, uint32_t now)
     return 0U;
   }
   Fan_Set(0U);
-  Watering_Abort(now);
   pulse = (target == WINDOW_OPEN) ? greenhouse.config.servo_open_pulse_us :
                                    greenhouse.config.servo_closed_pulse_us;
   __HAL_TIM_SET_COMPARE(greenhouse.pwm_timer, TIM_CHANNEL_1, pulse);
@@ -512,23 +638,21 @@ static void Light_Read(void)
 
 static void Watering_Start(uint32_t now)
 {
-  /* Automatic watering is allowed only for a valid dry-soil reading. */
+  /* Watering gets priority over the fan, but never over a moving servo. */
   if ((greenhouse.soil_state != SENSOR_VALID) ||
       (greenhouse.soil_percent >= PUMP_START_PERCENT) ||
       (greenhouse.config.pump_run_time_ms == 0U) ||
-      (greenhouse.fan_on != 0U) || (greenhouse.servo_moving != 0U))
+      (greenhouse.servo_moving != 0U))
   {
     return;
   }
+
+  Fan_Set(0U);
   greenhouse.watering_attempts++;
   greenhouse.water_state = WATER_PUMPING;
   greenhouse.water_tick = now;
   Pump_Set(1U);
-  if (greenhouse.pump_on != 0U)
-  {
-    Buzzer_Request(1U, now);
-  }
-  else
+  if (greenhouse.pump_on == 0U)
   {
     greenhouse.water_state = WATER_IDLE;
   }
@@ -556,7 +680,19 @@ static void Watering_Process(uint32_t now)
     Watering_Reset();
     return;
   }
-  if (greenhouse.soil_percent >= WATERING_COMPLETE_PERCENT)
+
+  /* A failed cycle rearms only after a clearly wet reading. */
+  if (greenhouse.water_state == WATER_FAILED)
+  {
+    Pump_Set(0U);
+    if (greenhouse.soil_percent >= PUMP_CLEAR_PERCENT)
+    {
+      Watering_Reset();
+    }
+    return;
+  }
+
+  if (greenhouse.soil_percent >= PUMP_CLEAR_PERCENT)
   {
     Watering_Reset();
     return;
@@ -579,28 +715,20 @@ static void Watering_Process(uint32_t now)
     {
       Watering_Reset();
     }
-    else if (greenhouse.soil_percent >= WATERING_COMPLETE_PERCENT)
-    {
-      Watering_Reset();
-    }
     else if (greenhouse.soil_percent >= PUMP_START_PERCENT)
     {
-      /* Soil is not dry enough for another automatic watering cycle. */
       Watering_Reset();
     }
     else if (greenhouse.watering_attempts >= MAX_WATERING_ATTEMPTS)
     {
       Pump_Set(0U);
       greenhouse.water_state = WATER_FAILED;
+      greenhouse.water_tick = now;
     }
     else
     {
       Watering_Start(now);
     }
-  }
-  else if (greenhouse.water_state == WATER_FAILED)
-  {
-    Pump_Set(0U);
   }
 }
 
@@ -742,8 +870,11 @@ static void LowLight_Process(uint32_t now)
   {
     greenhouse.low_light_timer_active = 0U;
     greenhouse.low_light_warning = 0U;
+    LowLight_BuzzerStop();
+    return;
   }
-  else if (greenhouse.light_percent < LOW_LIGHT_PERCENT)
+
+  if (greenhouse.light_percent < LOW_LIGHT_PERCENT)
   {
     if (greenhouse.low_light_timer_active == 0U)
     {
@@ -751,25 +882,30 @@ static void LowLight_Process(uint32_t now)
       greenhouse.low_light_tick = now;
     }
     else if ((greenhouse.low_light_warning == 0U) &&
-             (Elapsed(now, greenhouse.low_light_tick, LOW_LIGHT_TIME_MS) != 0U))
+             (Elapsed(now, greenhouse.low_light_tick,
+                      LOW_LIGHT_TIME_MS) != 0U))
     {
       greenhouse.low_light_warning = 1U;
-      Buzzer_Request(2U, now);
+      LowLight_BuzzerStart(now);
     }
   }
   else if (greenhouse.light_percent >= LOW_LIGHT_CLEAR_PERCENT)
   {
     greenhouse.low_light_timer_active = 0U;
     greenhouse.low_light_warning = 0U;
+    LowLight_BuzzerStop();
   }
+  else if (greenhouse.low_light_warning == 0U)
+  {
+    /* The initial delay must be continuously below the trigger threshold. */
+    greenhouse.low_light_timer_active = 0U;
+  }
+
+  LowLight_BuzzerProcess(now);
 }
 
 static WindowState RequiredWindow(void)
 {
-  if (greenhouse.aht20_state == SENSOR_ERROR)
-  {
-    return WINDOW_OPEN;
-  }
   if (Aht20ReadingAvailable() == 0U)
   {
     return greenhouse.window_state;
@@ -787,43 +923,87 @@ static WindowState RequiredWindow(void)
   return greenhouse.window_state;
 }
 
-static uint8_t PumpStartupActive(uint32_t now)
+static void Ventilation_Process(uint32_t now)
 {
-  return ((greenhouse.water_state == WATER_PUMPING) &&
-          (greenhouse.pump_on != 0U) &&
-          (Elapsed(now, greenhouse.water_tick, PUMP_STARTUP_HOLD_MS) == 0U)) ?
-         1U : 0U;
-}
+  WindowState required = RequiredWindow();
 
-static void FullControl_Process(uint32_t now)
-{
-  Fan_Set(0U);
-  greenhouse.critical_temperature = 0U;
-  greenhouse.ventilation_requested = 0U;
-
-  if (greenhouse.servo_moving != 0U)
+  if ((ServoConfigurationValid() != 0U) &&
+      (required != WINDOW_UNKNOWN) &&
+      (required != greenhouse.window_state) &&
+      (greenhouse.servo_moving == 0U))
   {
-    (void)HAL_TIM_PWM_Stop(greenhouse.pwm_timer, TIM_CHANNEL_1);
-    greenhouse.servo_moving = 0U;
+    Fan_Set(0U);
+    if (Servo_Start(required, now) != 0U)
+    {
+      return;
+    }
   }
 
-  if (PumpStartupActive(now) != 0U)
+  if ((greenhouse.pump_on != 0U) || (greenhouse.servo_moving != 0U))
   {
-    Pump_Set(1U);
+    Fan_Set(0U);
     return;
   }
 
-  if ((greenhouse.soil_state == SENSOR_VALID) &&
+  if (Aht20ReadingAvailable() == 0U)
+  {
+    greenhouse.ventilation_requested = 0U;
+    Fan_Set(0U);
+    return;
+  }
+
+  if (greenhouse.ventilation_requested != 0U)
+  {
+    if ((greenhouse.temperature_mc <= FAN_OFF_TEMP_MC) &&
+        (greenhouse.humidity_mpct <= FAN_OFF_HUMIDITY_MPCT))
+    {
+      greenhouse.ventilation_requested = 0U;
+    }
+  }
+  else if ((greenhouse.temperature_mc >= FAN_ON_TEMP_MC) ||
+           (greenhouse.humidity_mpct >= FAN_ON_HUMIDITY_MPCT))
+  {
+    greenhouse.ventilation_requested = 1U;
+  }
+
+  Fan_Set(greenhouse.ventilation_requested);
+}
+
+
+static void FullControl_Process(uint32_t now)
+{
+  greenhouse.critical_temperature =
+      ((greenhouse.climate_output.enabled != 0U) &&
+       (Aht20ReadingAvailable() != 0U) &&
+       (greenhouse.temperature_mc >= CRITICAL_TEMP_MC)) ? 1U : 0U;
+
+  if ((greenhouse.soil_output.enabled != 0U) &&
+      (greenhouse.soil_state == SENSOR_VALID) &&
       (AdcCalibrationValid(greenhouse.config.soil_dry_adc,
                            greenhouse.config.soil_wet_adc) != 0U) &&
-      (greenhouse.config.pump_run_time_ms != 0U) &&
-      (greenhouse.soil_percent < PUMP_START_PERCENT))
+      (greenhouse.config.pump_run_time_ms != 0U))
   {
     Watering_Process(now);
   }
   else
   {
     Watering_Reset();
+  }
+
+  if (greenhouse.pump_on != 0U)
+  {
+    Fan_Set(0U);
+    return;
+  }
+
+  if (greenhouse.climate_output.enabled != 0U)
+  {
+    Ventilation_Process(now);
+  }
+  else
+  {
+    greenhouse.ventilation_requested = 0U;
+    Fan_Set(0U);
   }
 }
 
@@ -934,7 +1114,8 @@ static void FormatAnalog(char *line, size_t size, const char *label,
   else if (calibrated != 0U)
   {
     TextAppendUnsigned(line, size, (uint32_t)percent);
-    TextAppend(line, size, " %");
+    TextAppend(line, size, " % R:");
+    TextAppendUnsigned(line, size, raw);
   }
   else
   {
@@ -963,7 +1144,19 @@ static void DisplayStatusLine(void)
 {
   const char *status;
 
-  if (greenhouse.critical_temperature != 0U)
+  if ((greenhouse.light_output.pending != 0U) ||
+      (greenhouse.soil_output.pending != 0U) ||
+      (greenhouse.climate_output.pending != 0U))
+  {
+    status = "OUTPUTS ARMING";
+  }
+  else if ((greenhouse.light_output.enabled == 0U) &&
+           (greenhouse.soil_output.enabled == 0U) &&
+           (greenhouse.climate_output.enabled == 0U))
+  {
+    status = "READING SENSORS";
+  }
+  else if (greenhouse.critical_temperature != 0U)
   {
     status = "HIGH TEMP ALERT";
   }
@@ -1070,7 +1263,8 @@ static void Oled_Retry(uint32_t now)
       (Elapsed(now, greenhouse.oled_retry_tick, RETRY_INTERVAL_MS) != 0U))
   {
     greenhouse.oled_retry_tick = now;
-    if (SSD1306_Init(&greenhouse.oled, greenhouse.i2c) == HAL_OK)
+    if ((I2C_RecoverBus() == HAL_OK) &&
+        (SSD1306_Init(&greenhouse.oled, greenhouse.i2c) == HAL_OK))
     {
       greenhouse.oled_valid = 1U;
       greenhouse.display_tick = now - DisplayInterval();
@@ -1102,6 +1296,52 @@ static void Display_Process(uint32_t now)
     FormatSoil(line, sizeof(line));
     SSD1306_WriteLine(&greenhouse.oled, 2U, line);
   }
+  else if (greenhouse.test_mode == GREENHOUSE_TEST_SOIL_PUMP)
+  {
+    SSD1306_Clear(&greenhouse.oled);
+    SSD1306_WriteLine(&greenhouse.oled, 0U, "SOIL + PUMP TEST");
+    FormatSoil(line, sizeof(line));
+    SSD1306_WriteLine(&greenhouse.oled, 2U, line);
+
+    TextSet(line, sizeof(line), "PUMP:");
+    TextAppend(line, sizeof(line),
+               (greenhouse.pump_on != 0U) ? "ON" : "OFF");
+    TextAppend(line, sizeof(line), " TRY:");
+    TextAppendUnsigned(line, sizeof(line), greenhouse.watering_attempts);
+    SSD1306_WriteLine(&greenhouse.oled, 4U, line);
+
+    if ((greenhouse.config.pump_run_time_ms == 0U) ||
+        (AdcCalibrationValid(greenhouse.config.soil_dry_adc,
+                             greenhouse.config.soil_wet_adc) == 0U))
+    {
+      TextSet(line, sizeof(line), "PUMP TEST DISABLED");
+    }
+    else if (greenhouse.soil_state != SENSOR_VALID)
+    {
+      TextSet(line, sizeof(line), "WAITING FOR SOIL");
+    }
+    else if (greenhouse.water_state == WATER_PUMPING)
+    {
+      TextSet(line, sizeof(line), "WATERING");
+    }
+    else if (greenhouse.water_state == WATER_SOAKING)
+    {
+      TextSet(line, sizeof(line), "SOAKING / RECHECK");
+    }
+    else if (greenhouse.water_state == WATER_FAILED)
+    {
+      TextSet(line, sizeof(line), "MAX ATTEMPTS");
+    }
+    else if (greenhouse.soil_percent < PUMP_START_PERCENT)
+    {
+      TextSet(line, sizeof(line), "DRY: STARTING");
+    }
+    else
+    {
+      TextSet(line, sizeof(line), "MOIST: PUMP OFF");
+    }
+    SSD1306_WriteLine(&greenhouse.oled, 6U, line);
+  }
   else if (greenhouse.test_mode == GREENHOUSE_TEST_AHT20)
   {
     SSD1306_Clear(&greenhouse.oled);
@@ -1132,13 +1372,22 @@ static void Display_Process(uint32_t now)
 static void TestMode_Process(uint32_t now)
 {
   Fan_Set(0U);
-  Pump_Set(0U);
   greenhouse.critical_temperature = 0U;
+
+  if (greenhouse.test_mode == GREENHOUSE_TEST_SOIL_PUMP)
+  {
+    Buzzer_Set(0U);
+    Watering_Process(now);
+    return;
+  }
+
+  Pump_Set(0U);
   if ((greenhouse.test_mode == GREENHOUSE_TEST_BUZZER) &&
       (Elapsed(now, greenhouse.test_tick, TEST_OUTPUT_INTERVAL_MS) != 0U))
   {
     greenhouse.test_tick = now;
-    Buzzer_Request(1U, now);
+    greenhouse.test_output_on ^= 1U;
+    Buzzer_Set(greenhouse.test_output_on);
   }
   else if ((greenhouse.test_mode == GREENHOUSE_TEST_SERVO) &&
            (greenhouse.servo_moving == 0U) &&
@@ -1207,7 +1456,10 @@ HAL_StatusTypeDef Greenhouse_Init(ADC_HandleTypeDef *adc,
 
   now = HAL_GetTick();
   Sensors_Initialize(now);
-  greenhouse.sensor_tick = now - SensorInterval();
+  /* Take ADC/BMP readings and start the first AHT20 conversion before any
+     automatic actuator is allowed to run. */
+  Sensors_StartCycle(now);
+  greenhouse.sensor_tick = now;
   greenhouse.aht20_retry_tick = now;
   greenhouse.bmp280_retry_tick = now;
   greenhouse.oled_retry_tick = now;
@@ -1218,56 +1470,58 @@ HAL_StatusTypeDef Greenhouse_Init(ADC_HandleTypeDef *adc,
   {
     greenhouse.oled_valid = 1U;
   }
-  /* Full test mode keeps the servo stopped; use GREENHOUSE_TEST_SERVO. */
+  /* Full mode now controls the window automatically; test mode cycles it. */
   return HAL_OK;
 }
 
 void Greenhouse_Process(void)
 {
   uint32_t now = HAL_GetTick();
-  uint8_t sensor_alarm;
 
-  Oled_Retry(now);
-  Servo_Process(now);
-  Watering_Timers(now);
-  if ((greenhouse.test_mode == GREENHOUSE_TEST_FULL) &&
-      (PumpStartupActive(now) != 0U))
+  /* Only actuator timers are conditional.  Sensor, buzzer, and OLED work
+     continues every loop regardless of which actuator is active. */
+  if (greenhouse.test_mode == GREENHOUSE_TEST_FULL)
   {
-    Fan_Set(0U);
-    Buzzer_Set(0U);
-    Pump_Set(1U);
-    return;
+    if (greenhouse.climate_output.enabled != 0U)
+    {
+      Servo_Process(now);
+    }
+    if (greenhouse.soil_output.enabled != 0U)
+    {
+      Watering_Timers(now);
+    }
   }
+  else
+  {
+    Servo_Process(now);
+    Watering_Timers(now);
+  }
+
   Sensors_ProcessAht20(now);
   if (Elapsed(now, greenhouse.sensor_tick, SensorInterval()) != 0U)
   {
     Sensors_StartCycle(now);
   }
-  if (greenhouse.test_mode == GREENHOUSE_TEST_FULL)
-  {
-    LowLight_Process(now);
-  }
-
-  sensor_alarm =
-      ((greenhouse.test_mode == GREENHOUSE_TEST_FULL) &&
-       ((greenhouse.aht20_state == SENSOR_ERROR) ||
-        (greenhouse.bmp280_state == SENSOR_ERROR) ||
-        (greenhouse.soil_state == SENSOR_ERROR) ||
-        (greenhouse.light_state == SENSOR_ERROR))) ? 1U : 0U;
-  if ((sensor_alarm != 0U) && (greenhouse.previous_sensor_alarm == 0U))
-  {
-    Buzzer_Request(3U, now);
-  }
-  greenhouse.previous_sensor_alarm = sensor_alarm;
+  Oled_Retry(now);
 
   if (greenhouse.test_mode == GREENHOUSE_TEST_FULL)
   {
+    OutputGates_Process(now);
+    if (greenhouse.light_output.enabled != 0U)
+    {
+      LowLight_Process(now);
+    }
+    else
+    {
+      greenhouse.low_light_timer_active = 0U;
+      greenhouse.low_light_warning = 0U;
+      LowLight_BuzzerStop();
+    }
     FullControl_Process(now);
   }
   else
   {
     TestMode_Process(now);
   }
-  Buzzer_Process(now);
   Display_Process(now);
 }

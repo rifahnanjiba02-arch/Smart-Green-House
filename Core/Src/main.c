@@ -34,14 +34,15 @@
 /* USER CODE BEGIN PD */
 
 /* Select one GreenhouseTestMode value while bringing up the hardware. */
-#define GREENHOUSE_SELECTED_TEST_MODE  GREENHOUSE_TEST_FULL
+#define GREENHOUSE_SELECTED_TEST_MODE GREENHOUSE_TEST_FULL
+//GREENHOUSE_TEST_SOIL_PUMP
 
 /*
  * Measure these values on the assembled greenhouse before enabling the
  * corresponding automatic actuator. Zero deliberately means "not set".
  */
-#define SOIL_DRY_ADC_CALIBRATION       443U
-#define SOIL_WET_ADC_CALIBRATION       363U
+#define SOIL_DRY_ADC_CALIBRATION       2378U
+#define SOIL_WET_ADC_CALIBRATION       1734U
 #define LIGHT_DARK_ADC_CALIBRATION     137U
 #define LIGHT_BRIGHT_ADC_CALIBRATION   700U
 #define SERVO_CLOSED_PULSE_US          1000U
@@ -257,7 +258,7 @@ static void MX_I2C1_Init(void)
 
   /* USER CODE END I2C1_Init 1 */
   hi2c1.Instance = I2C1;
-  hi2c1.Init.ClockSpeed = 400000;
+  hi2c1.Init.ClockSpeed = 100000;
   hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
   hi2c1.Init.OwnAddress1 = 0;
   hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;

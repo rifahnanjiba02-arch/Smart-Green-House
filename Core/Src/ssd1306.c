@@ -2,7 +2,7 @@
 
 #include <string.h>
 
-#define SSD1306_TIMEOUT_MS  20U
+#define SSD1306_TIMEOUT_MS  50U
 
 static const uint8_t font5x7[96][5] =
 {
